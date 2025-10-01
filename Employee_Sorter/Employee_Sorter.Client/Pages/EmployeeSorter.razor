@@ -1,0 +1,220 @@
+﻿@page "/"
+@rendermode InteractiveAuto
+@using Employee_Sorter.Client.Models
+
+<PageTitle>EmployeeSorter</PageTitle>
+
+<InputFile OnChange="LoadFile" />
+
+@if (!IsLoading)
+{
+    <h2>Selected file</h2>
+    <div>
+        <div>File name: @FileName</div>
+        <div>File size: @FileSize.ToString("n0") bytes</div>
+        <div>File type: @FileType</div>
+        <div>Last modified: @LastModified</div>
+    </div>
+
+    <br />
+
+    @if (Employees.Any())
+    {
+        <h4>All Employees</h4>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>EmpID</th>
+                    <th>ProjectID</th>
+                    <th>DateFrom</th>
+                    <th>DateTo</th>
+                    <th>DaysWorked</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var emp in Employees.OrderBy(x => x.ProjectID))
+                {
+                    <tr>
+                        <td>@emp.EmpID</td>
+                        <td>@emp.ProjectID</td>
+                        <td>@emp.DateFrom</td>
+                        <td>@(emp.DateTo.HasValue ? emp.DateTo.Value.ToString() : "NULL")</td>
+                        <td>@emp.DaysWorked</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+    <br/>
+    @if (SortedEmployees.Any())
+    {
+        <h4>Sorted Employees</h4>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>EmpID1</th>
+                    <th>EmpID2</th>
+                    <th>ProjectID</th>
+                    <th>DaysWorkedTogether</th>
+                </tr>
+            </thead>
+            <tbody>
+                @* .DistinctBy(x => x.ProjectID) I Removed this just in case of 2 or more pairs having the same amount of days within a project*@
+                @foreach (var emp in SortedEmployees.OrderBy(x => x.ProjectID))
+                {
+                    <tr>
+                        <td>@emp.EmpID1</td>
+                        <td>@emp.EmpID2</td>
+                        <td>@emp.ProjectID</td>
+                        <td>@emp.DaysWorkedTogether</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+}
+
+
+@if (!string.IsNullOrEmpty(ErrorMessage))
+{
+    <div>Error: @ErrorMessage</div>
+}
+
+@code {
+    private string FileName { get; set; } = string.Empty;
+    private long FileSize { get; set; }
+    private string FileType { get; set; } = string.Empty;
+    private DateTimeOffset LastModified { get; set; }
+    private string ErrorMessage { get; set; } = string.Empty;
+    private bool IsLoading { get; set; }
+    private List<Employee> Employees { get; set; } = new List<Employee>();
+    private List<EmployeePair> SortedEmployees { get; set; } = new List<EmployeePair>();
+
+
+    private async Task LoadFile(InputFileChangeEventArgs args)
+    {
+        IsLoading = true;
+        Employees = new List<Employee>();
+        SortedEmployees = new List<EmployeePair>();
+        try
+        {
+            IBrowserFile browserFile = args.File;
+
+            if (browserFile != null)
+            {
+                FileSize = browserFile.Size;
+                FileType = browserFile.ContentType;
+                FileName = browserFile.Name;
+                LastModified = browserFile.LastModified;
+
+                if (Path.GetExtension(browserFile.Name) == ".csv")//checking for csv file
+                {
+                    List<Employee> templist = new List<Employee>();//initializing temporary list to hold employees
+                    using StreamReader stream = new StreamReader(browserFile.OpenReadStream());
+
+                    string content = await stream.ReadToEndAsync();//reading file content
+
+                    var employees = content.Split(Environment.NewLine)//splitting by new line and comma
+                        .Select(x => x.Split(','))
+                        .Where(x => x.Length == 4)//expected amount of columns
+                        .ToList();
+
+                    foreach (var emp in employees)
+                    {
+                        int empId;
+                        int projectId;
+                        DateOnly DateFrom;
+                        DateOnly DateTo;
+                        List<bool> successList = new List<bool>
+                        {
+                            int.TryParse(emp[0], out empId),
+                            int.TryParse(emp[1], out projectId),
+                            DateOnly.TryParse(emp[2], out DateFrom),
+                        };
+
+                        if (successList.Any(s => !s))
+                        {
+                            continue;
+                        }
+
+                        bool isDateToValid = DateOnly.TryParse(emp[3], out DateTo);
+                        //The logic above this comment is to handle the column titles and any invalid data
+
+                        templist.Add(new Employee
+                        {
+                            EmpID = empId,
+                            ProjectID = projectId,
+                            DateFrom = DateFrom,
+                            DateTo = isDateToValid ? DateTo : null
+                        });
+                    }
+                    Employees.AddRange(templist);
+                    SortEmployees();
+                }
+            }
+            IsLoading = false;
+        }
+        catch (Exception e)
+        {
+            ErrorMessage = e.Message;
+            IsLoading = false;
+        }
+    }
+
+    private void SortEmployees()
+    {
+        IEnumerable<int> projectIds = Employees.Select(x => x.ProjectID).Distinct();
+
+        foreach (var id in projectIds)
+        {
+            List<Employee> employees = Employees.Where(x => x.ProjectID == id).ToList();
+
+            for (int i = 0; i < employees.Count; i++)//nested loop to compare each employee with every other employee in the same project
+            {
+                for (int j = i + 1; j < employees.Count; j++)
+                {
+                    Employee primaryEmployee = employees[i];
+                    Employee secondaryEmployee = employees[j];
+
+                    DateOnly primaryDateTo = primaryEmployee.DateTo 
+                        ?? DateOnly.FromDateTime(DateTime.Now);
+                    DateOnly secondaryDateTo = secondaryEmployee.DateTo 
+                        ?? DateOnly.FromDateTime(DateTime.Now);
+
+                    DateOnly overlapStart = primaryEmployee.DateFrom > secondaryEmployee.DateFrom 
+                        ? primaryEmployee.DateFrom : secondaryEmployee.DateFrom;
+
+                    DateOnly overlapEnd = primaryDateTo < secondaryDateTo 
+                        ? primaryDateTo : secondaryDateTo;
+
+                    if (overlapStart <= overlapEnd)//overlap check
+                    {
+                        int daysWorkedTogether = (overlapEnd.ToDateTime(new TimeOnly()) - overlapStart.ToDateTime(new TimeOnly())).Days;
+
+                        List<EmployeePair> tempEmployeesList = SortedEmployees.Where(x => x.ProjectID == id).ToList();
+
+                        if (tempEmployeesList.Any(x => x.DaysWorkedTogether < daysWorkedTogether))//removing any pairs with less days worked together
+                        {
+                            foreach (var emp in tempEmployeesList.Where(x => x.DaysWorkedTogether < daysWorkedTogether))
+                            {
+                                SortedEmployees.Remove(emp);
+                            }
+                        }
+
+                        if (!SortedEmployees.Any(x => x.DaysWorkedTogether > daysWorkedTogether && x.ProjectID == id))//only add to list if there isnt a "larger" pair
+                        {
+                            SortedEmployees.Add(new EmployeePair
+                            {
+                                EmpID1 = primaryEmployee.EmpID,
+                                EmpID2 = secondaryEmployee.EmpID,
+                                ProjectID = id,
+                                DaysWorkedTogether = daysWorkedTogether
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
